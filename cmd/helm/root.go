@@ -22,7 +22,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime/pprof"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -84,11 +87,52 @@ By default, the default directories depend on the Operating System. The defaults
 `
 
 func newRootCmd(actionConfig *action.Configuration, out io.Writer, args []string) (*cobra.Command, error) {
+	var profilingFilePath string
+
 	cmd := &cobra.Command{
 		Use:          "helm",
 		Short:        "The Helm package manager for Kubernetes.",
 		Long:         globalUsage,
 		SilenceUsage: true,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			path := os.Getenv("HELM_PROFILE_PATH")
+
+			if path != "" {
+				profilingFilePath = filepath.Join(path, fmt.Sprintf("pprof-%s.cpu", cmd.Use))
+
+				var (
+					fh  *os.File
+					err error
+				)
+
+				if fh, err = os.Create(profilingFilePath); err != nil {
+					log.Fatalf("failed to open file (%s) for profiling: %v", profilingFilePath, err)
+				}
+
+				if err = pprof.StartCPUProfile(fh); err != nil {
+					log.Fatalf("failed to start profiling: %v", err)
+				}
+
+				go func() {
+					var count int
+					for {
+						time.Sleep(time.Second * 2)
+						memProfilePath := filepath.Join(path, fmt.Sprintf("pprof-%s-.heap.%d", cmd.Use, count))
+
+						fh, _ := os.Create(memProfilePath)
+						pprof.WriteHeapProfile(fh)
+						fh.Close()
+
+						count++
+					}
+				}()
+			}
+		},
+		PersistentPostRun: func(cmd *cobra.Command, args []string) {
+			if os.Getenv("HELM_PROFILE_PATH") != "" {
+				pprof.StopCPUProfile()
+			}
+		},
 	}
 	flags := cmd.PersistentFlags()
 
